@@ -1,0 +1,18 @@
+cabal-version: 2.4
+
+name: hs-nix-modules
+version: 0
+
+executable hs-nix-modules
+  hs-source-dirs: executables
+  main-is: hs-nix-modules.hs
+
+  build-depends:
+      base
+    , containers
+    , directory
+    , filepath
+    , haskell-src-exts
+    , optparse-applicative
+    , pipes
+    , text
