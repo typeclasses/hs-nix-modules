@@ -1,7 +1,6 @@
 {-# OPTIONS_GHC -Wall #-}
-{-# LANGUAGE ApplicativeDo, BlockArguments, EmptyDataDecls,
-    LambdaCase, OverloadedStrings, ScopedTypeVariables,
-    TypeApplications, ViewPatterns #-}
+{-# LANGUAGE ApplicativeDo, BlockArguments, LambdaCase,
+    OverloadedStrings, ScopedTypeVariables, ViewPatterns #-}
 
 module Main (main) where
 
@@ -49,12 +48,6 @@ type Base = FilePath
 -- Name of a Haskell module
 type ModuleName = Text
 
-data Flag a = Yes | No
-
-data OutputStdout
-
-data StopAtLine
-
 
 ------------------------------------------------------------
 --  Command-line options
@@ -63,9 +56,8 @@ data StopAtLine
 data Opt =
   Opt
     { opt_inputPaths :: [FilePath]
-    , opt_outputStdout :: Flag OutputStdout
+    , opt_outputStdout :: Bool
     , opt_outputFile :: Maybe FilePath
-    , opt_stopAtLine :: Flag StopAtLine
     }
 
 
@@ -89,13 +81,11 @@ pOpt =
     inputPaths <- many (pInputPath)
     destStdout <- pStdout
     destFile <- optional pDestFile
-    stopAtLine <- pStopAtLine
 
     return Opt
       { opt_inputPaths = inputPaths
       , opt_outputStdout = destStdout
       , opt_outputFile = destFile
-      , opt_stopAtLine = stopAtLine
       }
 
 pInputPath :: Opt.Parser (FilePath)
@@ -105,8 +95,8 @@ pInputPath = Opt.option readFilePath $
     "A Haskell source file, or a directory containing \
     \ Haskell source files"
 
-pStdout :: Opt.Parser (Flag OutputStdout)
-pStdout = Opt.flag No Yes $
+pStdout :: Opt.Parser Bool
+pStdout = Opt.flag False True $
   Opt.long "stdout" <>
   Opt.help
     "Write the resulting Nix expression to stdout"
@@ -117,16 +107,6 @@ pDestFile = Opt.option readFilePath $
   Opt.metavar "OUTFILE" <>
   Opt.help
     "Write the resulting Nix expression to OUTFILE"
-
-pStopAtLine :: Opt.Parser (Flag StopAtLine)
-pStopAtLine = Opt.flag No Yes $
-  Opt.long "stop-at-line" <>
-  Opt.help
-    "Stop reading source files at the first horizontal line \
-    \(a line that consists of three or more dashes). \
-    \If you separate your imports from the rest of your code \
-    \with a line and use this flag, then this program can \
-    \work even if it can't parse the entire file."
 
 readFilePath :: Opt.ReadM FilePath
 readFilePath = Opt.maybeReader \s -> Just (Text.pack s)
@@ -158,16 +138,16 @@ destination_withOutputHandle =
 
 opt_destination :: Opt -> IO Destination
 opt_destination opt =
-  case (opt_outputStdout opt :: Flag OutputStdout, opt_outputFile opt) of
+  case (opt_outputStdout opt, opt_outputFile opt) of
 
-    (Yes, Nothing) -> return WriteToStdout
+    (True, Nothing) -> return WriteToStdout
 
-    (No, Just x) -> return (WriteToFile x)
+    (False, Just x) -> return (WriteToFile x)
 
-    (No, Nothing) ->
+    (False, Nothing) ->
       fail "Must specify either --stdout or --outfile"
 
-    (Yes, Just _) ->
+    (True, Just _) ->
       fail "Cannot use both --stdout and --outfile"
 
 
@@ -179,7 +159,6 @@ data Conf =
   Conf
     { conf_inputPaths :: Set FilePath
     , conf_destination :: Destination
-    , conf_stopAtLine :: Flag StopAtLine
     }
 
 
@@ -197,7 +176,6 @@ opt_conf opt =
     return Conf
       { conf_inputPaths = inputPaths
       , conf_destination = destination
-      , conf_stopAtLine = opt_stopAtLine opt
       }
 
 
@@ -216,7 +194,6 @@ mainConf conf =
       base = destination_base destination
       inputPaths = conf_inputPaths conf
       withOutputHandle = destination_withOutputHandle destination
-      stopAtLine = conf_stopAtLine conf
 
     withOutputHandle \h ->
       do
@@ -224,7 +201,7 @@ mainConf conf =
         runEffect
           (
             pipe_findSourceFiles inputPaths >->
-            pipe_parseSourceFiles stopAtLine >->
+            pipe_parseSourceFiles >->
             pipe_renderNixText base >->
             pipe_write h
           )
@@ -270,12 +247,11 @@ getFileType (Text.unpack -> fp) =
 --  Parsing Haskell source files
 ------------------------------------------------------------
 
-pipe_parseSourceFiles :: Flag StopAtLine ->
-    Pipe FilePath (FilePath, Module) IO ()
-pipe_parseSourceFiles stopAtLine =
+pipe_parseSourceFiles :: Pipe FilePath (FilePath, Module) IO ()
+pipe_parseSourceFiles =
   forever do
     fp <- await
-    m <- lift (parseSourceFile stopAtLine fp)
+    m <- lift (parseSourceFile fp)
     yield (fp, m)
 
 data Module =
@@ -284,52 +260,25 @@ data Module =
     , mod_imports :: Set ModuleName
     }
 
-parseSourceFile :: Flag StopAtLine -> FilePath -> IO Module
-parseSourceFile stopAtLine fp@(Text.unpack -> fp') =
-  do
-    r <- case stopAtLine :: Flag StopAtLine of
-
-      No ->
-          HS.parseFile fp'
-
-      Yes ->
-        do
-          t <- Text.readFile fp'
-          let s = Text.unpack (takeUntilDivider t)
-          return (HS.parseFileContents s)
-
-    parseResultModule fp r
-
-takeUntilDivider :: Text -> Text
-takeUntilDivider =
-    Text.unlines . takeWhile (not . isDivider) . Text.lines
-
-isDivider :: Text -> Bool
-isDivider x =
-    (Text.all (== '-') x) && (Text.length x >= 3)
-
-parseResultModule :: FilePath -> HS.ParseResult (HS.Module l) -> IO Module
-parseResultModule fp =
+parseSourceFile :: FilePath -> IO Module
+parseSourceFile (Text.unpack -> fp) =
+  HS.parseFile fp >>=
   \case
-    HS.ParseFailed _ e -> parseFail fp e
-    HS.ParseOk m       -> hsModule fp m
-
-hsModule :: FilePath -> HS.Module l -> IO Module
-hsModule fp =
-  \case
-    HS.Module _ (Just (HS.ModuleHead _ n _ _)) _ ims _ ->
+    HS.ParseFailed _ e ->
+      x e
+    HS.ParseOk m -> case m of
+      HS.Module _ (Just (HS.ModuleHead _ n _ _)) _ ims _ ->
         return (Module (hsModuleName n) (hsImports ims))
-    HS.Module _ Nothing _ _ _ ->
-        parseFail fp "Missing module head"
-    HS.XmlPage _ _ _ _ _ _ _ ->
-        parseFail fp "Don't know how to parse XmlPage"
-    HS.XmlHybrid _ (Just (HS.ModuleHead _ n _ _)) _ ims _ _ _ _ _ ->
+      HS.Module _ Nothing _ _ _ ->
+        x "Missing module head"
+      HS.XmlPage _ _ _ _ _ _ _ ->
+        x "Don't know how to parse XmlPage"
+      HS.XmlHybrid _ (Just (HS.ModuleHead _ n _ _)) _ ims _ _ _ _ _ ->
         return (Module (hsModuleName n) (hsImports ims))
-    HS.XmlHybrid _ Nothing _ _ _ _ _ _ _ ->
-        parseFail fp "Missing module head"
-
-parseFail :: FilePath -> String -> IO a
-parseFail (Text.unpack -> fp) e = fail ("<" ++ fp ++ "> " ++ e)
+      HS.XmlHybrid _ Nothing _ _ _ _ _ _ _ ->
+        x "Missing module head"
+  where
+    x e = fail ("<" ++ fp ++ "> " ++ e)
 
 hsModuleName :: HS.ModuleName l -> ModuleName
 hsModuleName (HS.ModuleName _ n) = Text.pack n
