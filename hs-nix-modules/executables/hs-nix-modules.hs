@@ -265,18 +265,20 @@ parseSourceFile (Text.unpack -> fp) =
   HS.parseFile fp >>=
   \case
     HS.ParseFailed _ e ->
-      fail e
+      x e
     HS.ParseOk m -> case m of
       HS.Module _ (Just (HS.ModuleHead _ n _ _)) _ ims _ ->
         return (Module (hsModuleName n) (hsImports ims))
       HS.Module _ Nothing _ _ _ ->
-        fail "Missing module head"
+        x "Missing module head"
       HS.XmlPage _ _ _ _ _ _ _ ->
-        fail "Don't know how to parse XmlPage"
+        x "Don't know how to parse XmlPage"
       HS.XmlHybrid _ (Just (HS.ModuleHead _ n _ _)) _ ims _ _ _ _ _ ->
         return (Module (hsModuleName n) (hsImports ims))
       HS.XmlHybrid _ Nothing _ _ _ _ _ _ _ ->
-        fail "Missing module head"
+        x "Missing module head"
+  where
+    x e = fail ("<" ++ fp ++ "> " ++ e)
 
 hsModuleName :: HS.ModuleName l -> ModuleName
 hsModuleName (HS.ModuleName _ n) = Text.pack n
