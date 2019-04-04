@@ -1,6 +1,7 @@
 {-# OPTIONS_GHC -Wall #-}
 {-# LANGUAGE ApplicativeDo, BlockArguments, LambdaCase,
-    OverloadedStrings, ScopedTypeVariables, ViewPatterns #-}
+    OverloadedStrings, ScopedTypeVariables, TypeApplications,
+    ViewPatterns #-}
 
 module Main (main) where
 
@@ -21,7 +22,9 @@ import qualified Data.Text as Text
 import qualified Data.Text.IO as Text
 
 -- haskell-src-exts
-import qualified Language.Haskell.Exts as HS
+import qualified Language.Haskell.Exts.Parser as HS
+import qualified Language.Haskell.Exts.SrcLoc as HS
+import qualified Language.Haskell.Exts.Syntax as HS
 
 -- optparse-applicative
 import qualified Options.Applicative as Opt
@@ -262,21 +265,16 @@ data Module =
 
 parseSourceFile :: FilePath -> IO Module
 parseSourceFile (Text.unpack -> fp) =
-  HS.parseFile fp >>=
+  readFile fp >>=
+  return . HS.parse @(HS.NonGreedy (HS.ModuleHeadAndImports HS.SrcSpanInfo)) >>=
   \case
-    HS.ParseFailed _ e ->
-      x e
-    HS.ParseOk m -> case m of
-      HS.Module _ (Just (HS.ModuleHead _ n _ _)) _ ims _ ->
-        return (Module (hsModuleName n) (hsImports ims))
-      HS.Module _ Nothing _ _ _ ->
-        x "Missing module head"
-      HS.XmlPage _ _ _ _ _ _ _ ->
-        x "Don't know how to parse XmlPage"
-      HS.XmlHybrid _ (Just (HS.ModuleHead _ n _ _)) _ ims _ _ _ _ _ ->
-        return (Module (hsModuleName n) (hsImports ims))
-      HS.XmlHybrid _ Nothing _ _ _ _ _ _ _ ->
-        x "Missing module head"
+      HS.ParseFailed _ e ->
+          x e
+      HS.ParseOk (HS.NonGreedy (HS.ModuleHeadAndImports _ _ Nothing _)) ->
+          x "Missing module head"
+      HS.ParseOk (HS.NonGreedy (
+        HS.ModuleHeadAndImports _ _ (Just (HS.ModuleHead _ n _ _)) ims)) ->
+          return (Module (hsModuleName n) (hsImports ims))
   where
     x e = fail ("<" ++ fp ++ "> " ++ e)
 
