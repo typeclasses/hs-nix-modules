@@ -22,6 +22,7 @@ import qualified Data.Text as Text
 import qualified Data.Text.IO as Text
 
 -- haskell-src-exts
+import qualified Language.Haskell.Exts.Extension as HS
 import qualified Language.Haskell.Exts.Parser as HS
 import qualified Language.Haskell.Exts.SrcLoc as HS
 import qualified Language.Haskell.Exts.Syntax as HS
@@ -266,7 +267,7 @@ data Module =
 parseSourceFile :: FilePath -> IO Module
 parseSourceFile (Text.unpack -> fp) =
   readFile fp >>=
-  return . HS.parse @(HS.NonGreedy (HS.ModuleHeadAndImports HS.SrcSpanInfo)) >>=
+  return . HS.parseWithMode @(HS.NonGreedy (HS.ModuleHeadAndImports HS.SrcSpanInfo)) parseMode >>=
   \case
       HS.ParseFailed _ e ->
           x e
@@ -277,6 +278,11 @@ parseSourceFile (Text.unpack -> fp) =
           return (Module (hsModuleName n) (hsImports ims))
   where
     x e = fail ("<" ++ fp ++ "> " ++ e)
+
+parseMode :: HS.ParseMode
+parseMode = HS.defaultParseMode
+  { HS.extensions = [ HS.EnableExtension HS.PackageImports ]
+  }
 
 hsModuleName :: HS.ModuleName l -> ModuleName
 hsModuleName (HS.ModuleName _ n) = Text.pack n
